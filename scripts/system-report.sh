@@ -1,7 +1,7 @@
 #!/bin/bash
 # system-report.sh — Full system report: CPU, RAM, disk, network, uptime
 
-set -euo pipefail
+set -uo pipefail
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -112,7 +112,7 @@ ip -o link show up | awk '{print $2}' | tr -d ':' | grep -v lo | while read -r i
 done
 
 # Public IP
-PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "unavailable")
+PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null) || PUBLIC_IP="unavailable"
 label "Public IP:" "$PUBLIC_IP"
 
 # ─── Top Processes ────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ ps aux --sort=-%cpu | awk 'NR==1{printf "  %-10s %-6s %-6s %s\n", "USER","PID","
 # ─── Security ─────────────────────────────────────────────────────────────────
 section "SECURITY"
 # Failed login attempts
-FAILED=$(grep -c 'Failed password' /var/log/auth.log 2>/dev/null || echo "0")
+FAILED=$(grep -c 'Failed password' /var/log/auth.log 2>/dev/null) || FAILED="0 (no access)"
 label "Failed logins:" "$FAILED (auth.log)"
 
 # Active users
