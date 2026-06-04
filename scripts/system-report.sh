@@ -1,0 +1,146 @@
+#!/bin/bash
+# system-report.sh — Full system report: CPU, RAM, disk, network, uptime
+
+set -euo pipefail
+
+# ─── Colors ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+section() {
+    echo ""
+    echo -e "${BOLD}${BLUE}══════════════════════════════════════${RESET}"
+    echo -e "${BOLD}${CYAN}  $1${RESET}"
+    echo -e "${BOLD}${BLUE}══════════════════════════════════════${RESET}"
+}
+
+label() {
+    printf "  ${YELLOW}%-20s${RESET} %s\n" "$1" "$2"
+}
+
+# ─── Header ───────────────────────────────────────────────────────────────────
+clear
+echo -e "${BOLD}${GREEN}"
+echo "  ╔═══════════════════════════════════════╗"
+echo "  ║       LINUX SYSTEM REPORT             ║"
+echo "  ║       $(date '+%Y-%m-%d %H:%M:%S')           ║"
+echo "  ╚═══════════════════════════════════════╝"
+echo -e "${RESET}"
+
+# ─── System Info ──────────────────────────────────────────────────────────────
+section "SYSTEM INFO"
+label "Hostname:"    "$(hostname)"
+label "OS:"          "$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '\"')"
+label "Kernel:"      "$(uname -r)"
+label "Architecture:" "$(uname -m)"
+label "Uptime:"      "$(uptime -p)"
+label "Last boot:"   "$(who -b | awk '{print $3, $4}')"
+
+# ─── CPU ──────────────────────────────────────────────────────────────────────
+section "CPU"
+CPU_MODEL=$(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)
+CPU_CORES=$(nproc)
+CPU_LOAD=$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1)
+
+label "Model:"    "$CPU_MODEL"
+label "Cores:"    "$CPU_CORES"
+label "Load now:" "${CPU_LOAD}%"
+
+# Load average (1, 5, 15 min)
+read -r LOAD1 LOAD5 LOAD15 _ < /proc/loadavg
+label "Load avg:" "1m: $LOAD1 | 5m: $LOAD5 | 15m: $LOAD15"
+
+# ─── Memory ───────────────────────────────────────────────────────────────────
+section "MEMORY (RAM)"
+TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
+USED=$(free -m  | awk '/^Mem:/ {print $3}')
+FREE=$(free -m  | awk '/^Mem:/ {print $4}')
+AVAILABLE=$(free -m | awk '/^Mem:/ {print $7}')
+PERCENT=$(awk "BEGIN {printf \"%.1f\", ($USED/$TOTAL)*100}")
+
+label "Total:"     "${TOTAL} MB"
+label "Used:"      "${USED} MB (${PERCENT}%)"
+label "Free:"      "${FREE} MB"
+label "Available:" "${AVAILABLE} MB"
+
+# Visual bar
+BAR_FILLED=$(awk "BEGIN {printf \"%d\", ($USED/$TOTAL)*20}")
+BAR_EMPTY=$((20 - BAR_FILLED))
+BAR="["
+for ((i=0; i<BAR_FILLED; i++)); do BAR+="█"; done
+for ((i=0; i<BAR_EMPTY; i++));  do BAR+="░"; done
+BAR+="] ${PERCENT}%"
+
+if (( $(echo "$PERCENT > 85" | bc -l) )); then
+    echo -e "  ${RED}RAM: $BAR${RESET}"
+elif (( $(echo "$PERCENT > 60" | bc -l) )); then
+    echo -e "  ${YELLOW}RAM: $BAR${RESET}"
+else
+    echo -e "  ${GREEN}RAM: $BAR${RESET}"
+fi
+
+# ─── Disk ─────────────────────────────────────────────────────────────────────
+section "DISK USAGE"
+echo ""
+df -h --output=target,size,used,avail,pcent | grep -v tmpfs | grep -v udev | while read -r line; do
+    PCENT=$(echo "$line" | awk '{print $5}' | tr -d '%')
+    if [[ "$PCENT" =~ ^[0-9]+$ ]]; then
+        if (( PCENT > 85 )); then
+            echo -e "  ${RED}$line${RESET}"
+        elif (( PCENT > 60 )); then
+            echo -e "  ${YELLOW}$line${RESET}"
+        else
+            echo -e "  ${GREEN}$line${RESET}"
+        fi
+    else
+        echo -e "  ${BOLD}$line${RESET}"
+    fi
+done
+
+# ─── Network ──────────────────────────────────────────────────────────────────
+section "NETWORK"
+# Active interfaces only
+ip -o link show up | awk '{print $2}' | tr -d ':' | grep -v lo | while read -r iface; do
+    IP=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    [[ -n "$IP" ]] && label "$iface:" "$IP"
+done
+
+# Public IP
+PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "unavailable")
+label "Public IP:" "$PUBLIC_IP"
+
+# ─── Top Processes ────────────────────────────────────────────────────────────
+section "TOP 5 PROCESSES (CPU)"
+echo ""
+ps aux --sort=-%cpu | awk 'NR==1{printf "  %-10s %-6s %-6s %s\n", "USER","PID","%CPU","COMMAND"} NR>1 && NR<=6{printf "  %-10s %-6s %-6s %s\n", $1,$2,$3,$11}'
+
+# ─── Security ─────────────────────────────────────────────────────────────────
+section "SECURITY"
+# Failed login attempts
+FAILED=$(grep -c 'Failed password' /var/log/auth.log 2>/dev/null || echo "0")
+label "Failed logins:" "$FAILED (auth.log)"
+
+# Active users
+LOGGED_IN=$(who | wc -l)
+label "Users logged in:" "$LOGGED_IN"
+
+# Last 3 logins
+echo ""
+echo -e "  ${YELLOW}Last logins:${RESET}"
+last -n 3 -F 2>/dev/null | head -3 | while read -r line; do
+    echo "    $line"
+done
+
+# ─── Footer ───────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}${BLUE}══════════════════════════════════════${RESET}"
+echo -e "  ${GREEN}Report generated by system-report.sh${RESET}"
+echo -e "  ${CYAN}github.com/TahaDEV/linux-sysadmin-toolkit${RESET}"
+echo -e "${BOLD}${BLUE}══════════════════════════════════════${RESET}"
+echo ""
