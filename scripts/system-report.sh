@@ -1,5 +1,8 @@
 #!/bin/bash
 # system-report.sh — Full system report: CPU, RAM, disk, network, uptime
+#
+# Usage : bash system-report.sh
+# Requires: curl, bc, iproute2 (ip), procps (free/ps/top)
 
 set -uo pipefail
 
@@ -44,20 +47,23 @@ label "Last boot:"   "$(who -b | awk '{print $3, $4}')"
 
 # ─── CPU ──────────────────────────────────────────────────────────────────────
 section "CPU"
+# /proc/cpuinfo exposes hardware CPU details
 CPU_MODEL=$(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)
 CPU_CORES=$(nproc)
+# top -bn1: single batch iteration to get current CPU usage %
 CPU_LOAD=$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1)
 
 label "Model:"    "$CPU_MODEL"
 label "Cores:"    "$CPU_CORES"
 label "Load now:" "${CPU_LOAD}%"
 
-# Load average (1, 5, 15 min)
+# /proc/loadavg: average CPU load over 1, 5 and 15 minutes
 read -r LOAD1 LOAD5 LOAD15 _ < /proc/loadavg
 label "Load avg:" "1m: $LOAD1 | 5m: $LOAD5 | 15m: $LOAD15"
 
 # ─── Memory ───────────────────────────────────────────────────────────────────
 section "MEMORY (RAM)"
+# free -m: RAM in MB. awk filters the "Mem:" line and extracts each column
 TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
 USED=$(free -m  | awk '/^Mem:/ {print $3}')
 FREE=$(free -m  | awk '/^Mem:/ {print $4}')
@@ -69,7 +75,7 @@ label "Used:"      "${USED} MB (${PERCENT}%)"
 label "Free:"      "${FREE} MB"
 label "Available:" "${AVAILABLE} MB"
 
-# Visual bar
+# Visual bar: 20 blocks scaled to usage — color changes at 60% (yellow) and 85% (red)
 BAR_FILLED=$(awk "BEGIN {printf \"%d\", ($USED/$TOTAL)*20}")
 BAR_EMPTY=$((20 - BAR_FILLED))
 BAR="["
@@ -88,6 +94,7 @@ fi
 # ─── Disk ─────────────────────────────────────────────────────────────────────
 section "DISK USAGE"
 echo ""
+# df -h: human-readable disk usage. Excludes tmpfs/udev (RAM-based pseudo-filesystems)
 df -h --output=target,size,used,avail,pcent | grep -v tmpfs | grep -v udev | while read -r line; do
     PCENT=$(echo "$line" | awk '{print $5}' | tr -d '%')
     if [[ "$PCENT" =~ ^[0-9]+$ ]]; then
@@ -105,7 +112,7 @@ done
 
 # ─── Network ──────────────────────────────────────────────────────────────────
 section "NETWORK"
-# Active interfaces only
+# List active interfaces (skip loopback), print IPv4 address for each
 ip -o link show up | awk '{print $2}' | tr -d ':' | grep -v lo | while read -r iface; do
     IP=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
     [[ -n "$IP" ]] && label "$iface:" "$IP"
@@ -122,15 +129,14 @@ ps aux --sort=-%cpu | awk 'NR==1{printf "  %-10s %-6s %-6s %s\n", "USER","PID","
 
 # ─── Security ─────────────────────────────────────────────────────────────────
 section "SECURITY"
-# Failed login attempts
+# Count failed SSH login attempts from auth.log (requires read permission)
 FAILED=$(grep -c 'Failed password' /var/log/auth.log 2>/dev/null) || FAILED="0 (no access)"
 label "Failed logins:" "$FAILED (auth.log)"
 
-# Active users
 LOGGED_IN=$(who | wc -l)
 label "Users logged in:" "$LOGGED_IN"
 
-# Last 3 logins
+# last -F: full timestamp format for login history
 echo ""
 echo -e "  ${YELLOW}Last logins:${RESET}"
 last -n 3 -F 2>/dev/null | head -3 | while read -r line; do
